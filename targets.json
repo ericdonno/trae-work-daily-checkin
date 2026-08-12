@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "trae",
+      "displayName": "TRAE Work",
+      "enabled": true,
+      "processNames": ["TRAE SOLO CN", "TRAE SOLO", "Trae CN", "Trae"],
+      "displayNamePattern": "TRAE|Trae",
+      "executableCandidates": [
+        "C:\\Apps\\TRAE SOLO CN\\TRAE SOLO CN.exe",
+        "%LOCALAPPDATA%\\Programs\\TRAE SOLO CN\\TRAE SOLO CN.exe",
+        "%LOCALAPPDATA%\\Programs\\TRAE SOLO\\TRAE SOLO.exe",
+        "%LOCALAPPDATA%\\Programs\\Trae CN\\Trae CN.exe",
+        "%PROGRAMFILES%\\TRAE SOLO CN\\TRAE SOLO CN.exe"
+      ],
+      "launchArguments": ["--force-renderer-accessibility", "--enable-accessibility"],
+      "claimPatterns": [
+        "^(签到|立即签到|今日签到)$",
+        "^(领取|立即领取|一键领取|领取今日.*|今日可领.*)$",
+        "^(Claim|Check[ -]?in|Daily reward)$"
+      ],
+      "successPatterns": ["今日已领", "今日已签到", "已领取", "签到成功", "Claimed", "Checked[ -]?in"],
+      "navigationPatterns": ["^(签到|积分|福利|礼包|活动中心|每日福利|每日签到)$"],
+      "loginPatterns": ["^(登录|立即登录|扫码登录|手机号登录|Log in|Sign in)$"],
+      "captchaPatterns": ["验证码", "安全验证", "人机验证", "CAPTCHA"]
+    },
+    {
+      "id": "workbuddy",
+      "displayName": "腾讯 WorkBuddy",
+      "enabled": true,
+      "processNames": ["WorkBuddy", "workbuddy"],
+      "displayNamePattern": "WorkBuddy",
+      "executableCandidates": [
+        "%LOCALAPPDATA%\\Programs\\WorkBuddy\\WorkBuddy.exe",
+        "%LOCALAPPDATA%\\WorkBuddy\\WorkBuddy.exe",
+        "%PROGRAMFILES%\\WorkBuddy\\WorkBuddy.exe",
+        "C:\\Apps\\WorkBuddy\\WorkBuddy.exe"
+      ],
+      "launchArguments": ["--force-renderer-accessibility", "--enable-accessibility"],
+      "claimPatterns": [
+        "今日可领.*积分",
+        "^(签到|立即签到|领取|立即领取|领取今日礼包)$",
+        "^(Claim|Check[ -]?in|Daily reward)$"
+      ],
+      "successPatterns": ["今日已领", "今日已签到", "已领取", "签到成功", "Claimed", "Checked[ -]?in"],
+      "navigationPatterns": ["Buddy加油站", "^(签到|积分|福利|礼包|每日签到)$"],
+      "loginPatterns": ["^(登录|立即登录|微信登录|扫码登录|手机号登录|Log in|Sign in)$"],
+      "captchaPatterns": ["验证码", "安全验证", "人机验证", "CAPTCHA"]
+    }
+  ]
+}

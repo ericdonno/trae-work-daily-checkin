@@ -1,0 +1,7 @@
+# Per-machine state; may contain desktop screenshots and account UI.
+runtime/
+
+# Windows noise
+Thumbs.db
+Desktop.ini
+*.log
