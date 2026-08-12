@@ -113,6 +113,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\checkin.ps1 -Mode SelfTest
 
 运行日志位于 `runtime/<电脑名-用户名>/checkin.log`。
 
+## 致谢
+
+CheckinBox 在“复用现有登录状态、只点击明确匹配的领取控件、点击后验证结果、遇到陌生界面即停止”等安全原则上，参考了 Zoey Liew 的 [workbuddy-daily-checkin](https://github.com/zoeyliew192/workbuddy-daily-checkin)。该项目是面向 macOS 和 Computer Use 的 Agent Skill，采用 MIT 许可证。
+
+CheckinBox 没有复制该项目的源码，也不是它的 Windows 移植版。本项目的 PowerShell 实现、本地图像校准、计划任务与失败补跑流程均针对 Windows 和 TRAE Work 独立实现。
+
 ## 项目边界
 
 CheckinBox 不负责注册账号、自动登录、保存凭据、绕过验证码、解锁 Windows 或规避平台限制。同一平台多账号尚未支持。
