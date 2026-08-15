@@ -6,9 +6,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:ScriptPath = $MyInvocation.MyCommand.Path
+$script:Root = Split-Path -Parent $script:ScriptPath
 $script:ConfigPath = Join-Path $script:Root 'targets.json'
-$script:TaskName = 'AutoAgentsLogin-DailyCheckin'
+$script:TaskName = 'CheckinBox-DailyCheckin'
+$script:LegacyTaskName = 'AutoAgentsLogin-DailyCheckin'
 $machineKey = (($env:COMPUTERNAME + '-' + $env:USERNAME) -replace '[^A-Za-z0-9_.-]', '_')
 $script:Runtime = Join-Path $script:Root (Join-Path 'runtime' $machineKey)
 $script:LogPath = Join-Path $script:Runtime 'checkin.log'
@@ -131,6 +133,11 @@ function Get-ImageCalibrationPath($App) {
     Join-Path $script:Runtime ('image-calibration-' + $App.id + '.json')
 }
 
+function Test-AppCalibrated($App) {
+    (Test-Path -LiteralPath (Get-CalibrationPath $App)) -or
+    (Test-Path -LiteralPath (Get-ImageCalibrationPath $App))
+}
+
 function Get-TargetWindow($App) {
     $pids = @((Get-TargetProcesses $App) | Select-Object -ExpandProperty Id)
     if ($pids.Count -eq 0) { return $null }
@@ -146,6 +153,16 @@ function Get-TargetWindow($App) {
     $null
 }
 
+function Wait-TargetWindow($App, [int]$Seconds = 30) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $window = Get-TargetWindow $App
+        if ($window) { return $window }
+        Start-Sleep -Milliseconds 750
+    } while ((Get-Date) -lt $deadline)
+    $null
+}
+
 function Add-NativeDesktopType {
     if ('AutoAgentsLoginClickNative' -as [type]) { return }
     Add-Type @'
@@ -154,6 +171,7 @@ using System.Runtime.InteropServices;
 public static class AutoAgentsLoginClickNative {
     [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, bool repaint);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 }
@@ -195,35 +213,81 @@ function Get-ImageDifference($First, $Second) {
     [double]$total / [double]$samples
 }
 
+function Open-TraeAccountMenu($Window) {
+    $rect = $Window.Current.BoundingRectangle
+    $screenX = [int][Math]::Floor($rect.Left) + 130
+    $screenY = [int][Math]::Floor($rect.Top + $rect.Height) - 34
+    [void][AutoAgentsLoginClickNative]::SetCursorPos($screenX, $screenY)
+    Start-Sleep -Milliseconds 200
+    [AutoAgentsLoginClickNative]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+    [AutoAgentsLoginClickNative]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 800
+}
+
 function Run-ImageTarget($App) {
     Add-NativeDesktopType
     Add-Type -AssemblyName System.Drawing
     $calibration = Get-Content -Raw -LiteralPath (Get-ImageCalibrationPath $App) -Encoding UTF8 | ConvertFrom-Json
     $templatePath = Join-Path $script:Runtime ([string]$calibration.template)
     if (-not (Test-Path -LiteralPath $templatePath)) { Write-Log ("{0}: image template missing." -f $App.displayName) 'ERROR'; return 'needs-calibration' }
-    $wasRunning = @(Get-TargetProcesses $App).Count -gt 0
-    if (-not $wasRunning) {
+    if ([int]$calibration.centerY -lt 50) { Write-Log ("{0}: calibrated point is inside the window header; refusing click." -f $App.displayName) 'ERROR'; return 'needs-calibration' }
+    $window = Get-TargetWindow $App
+    if (-not $window) {
         $exe = Find-Executable $App
         if (-not $exe) { return 'not-installed' }
         Start-Target $App $exe
-        $deadline = (Get-Date).AddSeconds(30)
-        do { Start-Sleep -Milliseconds 750; $window = Get-TargetWindow $App } while (-not $window -and (Get-Date) -lt $deadline)
-    } else { $window = Get-TargetWindow $App }
+        $window = Wait-TargetWindow $App
+    }
     if (-not $window) { Write-Log ("{0}: interactive window not found." -f $App.displayName) 'ERROR'; return 'deferred' }
     $handle = [IntPtr]$window.Current.NativeWindowHandle
     [void][AutoAgentsLoginClickNative]::ShowWindowAsync($handle, 9)
     [void][AutoAgentsLoginClickNative]::SetForegroundWindow($handle)
     Start-Sleep -Seconds 1
-    $capture = Capture-WindowBitmap $window
+    $rect = $window.Current.BoundingRectangle
+    if ([Math]::Abs($rect.Width-[int]$calibration.windowWidth) -gt 3 -or [Math]::Abs($rect.Height-[int]$calibration.windowHeight) -gt 3) {
+        Write-Log ("{0}: restoring calibrated window size." -f $App.displayName)
+        [void][AutoAgentsLoginClickNative]::MoveWindow($handle, [int]$rect.Left, [int]$rect.Top, [int]$calibration.windowWidth, [int]$calibration.windowHeight, $true)
+        Start-Sleep -Seconds 1
+        $window = Get-TargetWindow $App
+        if (-not $window) { Write-Log ("{0}: window disappeared while restoring size." -f $App.displayName) 'ERROR'; return 'deferred' }
+    }
     $template = [System.Drawing.Bitmap]::FromFile($templatePath)
+    $capture = $null
     $beforeCrop = $null
     try {
+        $hoverRect = $window.Current.BoundingRectangle
+        [void][AutoAgentsLoginClickNative]::SetCursorPos(
+            [int][Math]::Floor($hoverRect.Left) + [int]$calibration.centerX,
+            [int][Math]::Floor($hoverRect.Top) + [int]$calibration.centerY
+        )
+        Start-Sleep -Milliseconds 500
+        $capture = Capture-WindowBitmap $window
         if ([Math]::Abs($capture.Bounds.Width-[int]$calibration.windowWidth) -gt 3 -or [Math]::Abs($capture.Bounds.Height-[int]$calibration.windowHeight) -gt 3) {
             Write-Log ("{0}: window size changed; refusing coordinate click." -f $App.displayName) 'ERROR'
             return 'needs-calibration'
         }
         $beforeCrop = Get-CroppedBitmap $capture.Bitmap $calibration
         $difference = Get-ImageDifference $beforeCrop $template
+        if ($difference -gt [double]$calibration.maxDifference -and [string]$App.id -eq 'trae') {
+            Write-Log ("{0}: check-in card is not visible; opening the account menu." -f $App.displayName)
+            $beforeCrop.Dispose(); $beforeCrop = $null
+            $capture.Bitmap.Dispose(); $capture = $null
+            Open-TraeAccountMenu $window
+            foreach ($attempt in 1..4) {
+                $hoverRect = $window.Current.BoundingRectangle
+                [void][AutoAgentsLoginClickNative]::SetCursorPos(
+                    [int][Math]::Floor($hoverRect.Left) + [int]$calibration.centerX,
+                    [int][Math]::Floor($hoverRect.Top) + [int]$calibration.centerY
+                )
+                Start-Sleep -Milliseconds 750
+                $capture = Capture-WindowBitmap $window
+                $beforeCrop = Get-CroppedBitmap $capture.Bitmap $calibration
+                $difference = Get-ImageDifference $beforeCrop $template
+                if ($difference -le [double]$calibration.maxDifference -or $attempt -eq 4) { break }
+                $beforeCrop.Dispose(); $beforeCrop = $null
+                $capture.Bitmap.Dispose(); $capture = $null
+            }
+        }
         Write-Log ("{0}: image-template difference {1:N2}." -f $App.displayName, $difference)
         if ($difference -gt [double]$calibration.maxDifference) {
             Write-Log ("{0}: current button differs from calibrated unclaimed state; no click." -f $App.displayName) 'ERROR'
@@ -252,7 +316,8 @@ function Run-ImageTarget($App) {
         'success'
     } finally {
         if ($beforeCrop) { $beforeCrop.Dispose() }
-        $template.Dispose(); $capture.Bitmap.Dispose()
+        $template.Dispose()
+        if ($capture) { $capture.Bitmap.Dispose() }
     }
 }
 
@@ -262,11 +327,11 @@ function Calibrate-ImageTarget($App) {
     Add-Type -AssemblyName System.Windows.Forms
     $exe = Find-Executable $App
     if (-not $exe) { Write-Log ("{0}: not installed; skipped." -f $App.displayName) 'WARN'; return }
-    if (@(Get-TargetProcesses $App).Count -eq 0) {
-        Start-Target $App $exe
-        Start-Sleep -Seconds 5
-    }
     $window = Get-TargetWindow $App
+    if (-not $window) {
+        Start-Target $App $exe
+        $window = Wait-TargetWindow $App
+    }
     if (-not $window) { Write-Log ("{0}: interactive window not found." -f $App.displayName) 'ERROR'; return }
     $handle = [IntPtr]$window.Current.NativeWindowHandle
     [void][AutoAgentsLoginClickNative]::ShowWindowAsync($handle, 9)
@@ -280,7 +345,7 @@ function Calibrate-ImageTarget($App) {
         $cursor = [System.Windows.Forms.Cursor]::Position
         $centerX = $cursor.X - $capture.Bounds.Left
         $centerY = $cursor.Y - $capture.Bounds.Top
-        if ($centerX -lt 50 -or $centerY -lt 24 -or $centerX -gt ($capture.Bounds.Width-50) -or $centerY -gt ($capture.Bounds.Height-24)) {
+        if ($centerX -lt 50 -or $centerY -lt 50 -or $centerX -gt ($capture.Bounds.Width-50) -or $centerY -gt ($capture.Bounds.Height-24)) {
             throw 'Mouse cursor was not safely inside the target window.'
         }
         $cropX = $centerX - 46; $cropY = $centerY - 20
@@ -495,7 +560,7 @@ function Run-Target($App) {
     if (-not $exe) { Write-Log ("{0}: not installed; skipped." -f $App.displayName) 'WARN'; return 'not-installed' }
     $uiaCalibrated = Test-Path -LiteralPath (Get-CalibrationPath $App)
     $imageCalibrated = Test-Path -LiteralPath (Get-ImageCalibrationPath $App)
-    if (-not $uiaCalibrated -and -not $imageCalibrated) {
+    if (-not (Test-AppCalibrated $App)) {
         Write-Log ("{0}: not calibrated; no client launch or click performed." -f $App.displayName) 'ERROR'
         return 'needs-calibration'
     }
@@ -572,36 +637,121 @@ function Show-FinalFailure($Results) {
     try { & msg.exe $env:USERNAME $message 2>$null } catch {}
 }
 
+function Get-RunExitCode($Results) {
+    if (@($Results.GetEnumerator() | Where-Object { $_.Value -notin @('success', 'not-installed') }).Count -gt 0) { return 1 }
+    0
+}
+
+function Get-AccountSid([string]$Account) {
+    (New-Object Security.Principal.NTAccount($Account)).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
 function Install-Task {
     $missing = @()
     foreach ($app in @(Get-Targets)) {
-        if ((Find-Executable $app) -and
-            -not (Test-Path -LiteralPath (Get-CalibrationPath $app)) -and
-            -not (Test-Path -LiteralPath (Get-ImageCalibrationPath $app))) { $missing += $app.displayName }
+        if ((Find-Executable $app) -and -not (Test-AppCalibrated $app)) { $missing += $app.displayName }
     }
     if ($missing.Count -gt 0) { throw ('Calibrate installed clients first: ' + ($missing -join ', ')) }
-    $scriptPath = (Resolve-Path -LiteralPath $MyInvocation.ScriptName).Path
-    $taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Mode Run' -f $scriptPath
-    $arguments = @('/Create','/TN',$script:TaskName,'/TR',$taskCommand,'/SC','DAILY','/ST','14:00','/RI','60','/DU','08:05','/IT','/F')
-    $output = & schtasks.exe @arguments 2>&1
-    if ($LASTEXITCODE -ne 0) { throw ('schtasks failed: ' + ($output -join ' ')) }
+    $RequestedTaskUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $requestedTaskSid = Get-AccountSid $RequestedTaskUser
+
+    $scriptPath = (Resolve-Path -LiteralPath $script:ScriptPath).Path
+    Unblock-File -LiteralPath $scriptPath
+    $powerShellExe = Join-Path $PSHOME 'powershell.exe'
+    $taskArguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "{0}" -Mode Run' -f $scriptPath
+    $action = New-ScheduledTaskAction -Execute $powerShellExe -Argument $taskArguments -WorkingDirectory $script:Root
+    $trigger = New-ScheduledTaskTrigger -Daily -At '14:00'
+    $repetition = New-ScheduledTaskTrigger -Once -At '14:00' -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Hours 8)
+    $trigger.Repetition = $repetition.Repetition
+    $principal = New-ScheduledTaskPrincipal -UserId $RequestedTaskUser -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
-    Set-ScheduledTask -TaskName $script:TaskName -Settings $settings | Out-Null
-    Write-Log ("Installed task '{0}': daily 14:00, hourly through 22:00, interactive user only." -f $script:TaskName)
+    $definition = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'CheckinBox local daily reward check-in'
+    Register-ScheduledTask -TaskName $script:TaskName -InputObject $definition -Force | Out-Null
+
+    try {
+        $registered = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop
+        $info = $registered | Get-ScheduledTaskInfo -ErrorAction Stop
+        $registeredAction = @($registered.Actions)[0]
+        $registeredTrigger = @($registered.Triggers)[0]
+        $startHour = ([DateTimeOffset]::Parse([string]$registeredTrigger.StartBoundary)).ToLocalTime().Hour
+        $errors = @()
+        if (-not $registered.Settings.Enabled -or $registered.Settings.Hidden) { $errors += 'task is disabled or hidden' }
+        if ((Get-AccountSid ([string]$registered.Principal.UserId)) -ne $requestedTaskSid) { $errors += 'run account mismatch' }
+        if ([string]$registered.Principal.LogonType -ne 'Interactive') { $errors += 'logon type mismatch' }
+        if ([string]$registered.Principal.RunLevel -ne 'Limited') { $errors += 'run level mismatch' }
+        if ([string]$registeredAction.Execute -ne $powerShellExe -or [string]$registeredAction.Arguments -ne $taskArguments) { $errors += 'action mismatch' }
+        if ([string]$registeredAction.WorkingDirectory -ne $script:Root) { $errors += 'working directory mismatch' }
+        if ($startHour -ne 14 -or [string]$registeredTrigger.Repetition.Interval -ne 'PT1H' -or [string]$registeredTrigger.Repetition.Duration -ne 'PT8H') { $errors += 'trigger mismatch' }
+        if (-not $info.NextRunTime) { $errors += 'next run time is missing' }
+        if ($errors.Count -gt 0) { throw ('Task verification failed: ' + ($errors -join '; ')) }
+    } catch {
+        Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        throw
+    }
+
+    $legacy = Get-ScheduledTask -TaskName $script:LegacyTaskName -ErrorAction SilentlyContinue
+    if ($legacy) { $legacy | Unregister-ScheduledTask -Confirm:$false }
+    Write-Log ("Installed and verified task '{0}' for {1}: daily 14:00, hourly through 22:00." -f $script:TaskName, $RequestedTaskUser)
+    Write-Host ('Next run: ' + $info.NextRunTime)
 }
 
 function Show-Status {
     Write-Host "Project: $script:Root"
     Write-Host "Runtime: $script:Runtime"
-    foreach ($app in @(Get-Targets)) {
+    $rows = foreach ($app in @(Get-Targets)) {
         $installed = [bool](Find-Executable $app)
         $running = @(Get-TargetProcesses $app).Count -gt 0
         $done = Test-SucceededToday $app
-        $calibrated = Test-Path -LiteralPath (Get-CalibrationPath $app)
+        $calibrated = Test-AppCalibrated $app
         [pscustomobject]@{ Target=$app.displayName; Installed=$installed; Running=$running; Calibrated=$calibrated; DoneToday=$done }
     }
-    $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
-    Write-Host ('Scheduled task: ' + $(if ($task) { $task.State } else { 'not installed' }))
+    $rows | Format-Table -AutoSize
+
+    $task = $null
+    $taskError = $null
+    foreach ($name in @($script:TaskName, $script:LegacyTaskName)) {
+        try {
+            $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
+            break
+        } catch {
+            if ($_.FullyQualifiedErrorId -notmatch 'NotFound') { $taskError = $_; break }
+        }
+    }
+    if ($taskError) {
+        Write-Host ('Scheduled task: query failed (' + $taskError.Exception.Message.Trim() + ')') -ForegroundColor Yellow
+        return
+    }
+    if (-not $task) {
+        Write-Host 'Scheduled task: not installed' -ForegroundColor Yellow
+        return
+    }
+    try {
+        $info = $task | Get-ScheduledTaskInfo -ErrorAction Stop
+        $lastRun = if ($info.LastRunTime.Year -lt 2000) { 'never' } else { [string]$info.LastRunTime }
+        $lastResult = '0x{0:X8} ({1})' -f ([uint32]$info.LastTaskResult), $info.LastTaskResult
+        Write-Host ("Scheduled task: {0} [{1}]" -f $task.TaskName, $task.State)
+        Write-Host ('Run account: ' + $task.Principal.UserId)
+        Write-Host ('Last run: ' + $lastRun)
+        Write-Host ('Last result: ' + $lastResult)
+        Write-Host ('Next run: ' + $info.NextRunTime)
+    } catch {
+        Write-Host ('Scheduled task info: query failed (' + $_.Exception.Message.Trim() + ')') -ForegroundColor Yellow
+    }
+}
+
+function Remove-Tasks {
+    $removed = @()
+    foreach ($name in @($script:TaskName, $script:LegacyTaskName)) {
+        try {
+            $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
+            $task | Unregister-ScheduledTask -Confirm:$false
+            $removed += $name
+        } catch {
+            if ($_.FullyQualifiedErrorId -notmatch 'NotFound') { throw }
+        }
+    }
+    if ($removed.Count -gt 0) { Write-Log ('Removed scheduled task(s): ' + ($removed -join ', ')) }
+    else { Write-Log 'No CheckinBox scheduled task was installed.' }
 }
 
 function Invoke-SelfTest {
@@ -610,10 +760,14 @@ function Invoke-SelfTest {
     if (@($config.targets).Count -lt 2) { throw 'Expected TRAE and WorkBuddy targets.' }
     if (-not (Matches-Any '今日可领 100 积分' @('今日可领.*积分'))) { throw 'Matcher self-test failed.' }
     if (Matches-Any '升级 Pro' @('^(签到|领取)$')) { throw 'Matcher safety self-test failed.' }
+    if ((Get-RunExitCode @{ trae='success'; workbuddy='not-installed' }) -ne 0) { throw 'Successful exit-code self-test failed.' }
+    if ((Get-RunExitCode @{ trae='failed' }) -eq 0) { throw 'Failure exit-code self-test failed.' }
+    if (-not (Get-AccountSid ([Security.Principal.WindowsIdentity]::GetCurrent().Name))) { throw 'Account SID self-test failed.' }
     Ensure-Runtime
-    Write-Host 'SELFTEST OK: config, safe matchers, runtime path, and PowerShell syntax are usable.'
+    Write-Host 'SELFTEST OK: config, safe matchers, exit codes, runtime path, and PowerShell syntax are usable.'
 }
 
+try {
 Import-UIAutomation
 switch ($Mode) {
     'Run' {
@@ -626,6 +780,7 @@ switch ($Mode) {
             foreach ($app in @(Get-Targets)) { $results[$app.id] = Run-Target $app }
             Show-FinalFailure $results
         } finally { $mutex.ReleaseMutex(); $mutex.Dispose() }
+        exit (Get-RunExitCode $results)
     }
     'Calibrate' { foreach ($app in @(Get-Targets)) { Calibrate-Target $app } }
     'ImageCalibrate' { foreach ($app in @(Get-Targets)) { Calibrate-ImageTarget $app } }
@@ -639,11 +794,14 @@ switch ($Mode) {
         }
     }
     'Capture' { foreach ($app in @(Get-Targets)) { [void](Save-DesktopCapture $app) } }
-    'Status' { Show-Status | Format-Table -AutoSize }
+    'Status' { Show-Status }
     'Install' { Install-Task }
-    'Uninstall' {
-        Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction SilentlyContinue
-        Write-Log ("Removed task '{0}'. Project files were not changed." -f $script:TaskName)
-    }
+    'Uninstall' { Remove-Tasks }
     'SelfTest' { Invoke-SelfTest }
+}
+} catch {
+    $failure = $_
+    $detail = ($failure | Out-String).Trim()
+    try { Write-Log $detail 'ERROR' } catch { Write-Host ('ERROR: ' + $detail) -ForegroundColor Red }
+    exit 1
 }

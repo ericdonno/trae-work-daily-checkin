@@ -37,7 +37,7 @@ git clone https://github.com/ericdonno/trae-work-daily-checkin.git
 cd trae-work-daily-checkin
 ```
 
-打开 TRAE Work，手动完成登录，并让尚未领取的每日签到卡片显示在窗口中。
+打开 TRAE Work，手动完成登录，点击左下角账号栏，让尚未领取的每日签到卡片显示在菜单中。
 
 ### 2. 校准签到按钮
 
@@ -51,9 +51,9 @@ cd trae-work-daily-checkin
 
 1. `run.cmd`：立即执行一次真实签到；
 2. `status.cmd`：确认今日状态；
-3. `setup.cmd`：注册每日自动任务。
+3. `setup.cmd`：以当前登录用户注册并验证每日自动任务。
 
-完成。之后 CheckinBox 会在每天 14:00 自动运行，失败时每小时补跑至 22:00。
+只有当任务账号、脚本路径、触发时间和下次运行时间都反查正确时，安装窗口才会显示 `Setup finished and the scheduled task was verified.`。之后 CheckinBox 会在每天 14:00 自动运行，失败时每小时补跑至 22:00。
 
 > Windows 必须处于用户已登录、桌面未锁定的交互会话。工具不会自动解锁电脑，也不会代替用户处理登录或验证码。
 
@@ -62,8 +62,8 @@ cd trae-work-daily-checkin
 每次运行都会执行同一套保护流程：
 
 1. 找到目标客户端及其真实窗口；
-2. 恢复窗口并读取签到按钮区域；
-3. 将当前画面与校准模板比较；
+2. 恢复窗口；若签到卡片未显示，自动打开左下角账号菜单；
+3. 读取签到按钮区域，并与校准模板比较；
 4. 只有差异低于安全阈值时才点击一次；
 5. 点击后检查按钮区域是否发生明显变化；
 6. 验证成功后记录当天状态并关闭客户端；
@@ -89,8 +89,8 @@ cd trae-work-daily-checkin
 | `targets.json` | 客户端进程名、安装路径候选和安全匹配规则 |
 | `calibrate.cmd` | 首次校准或客户端界面更新后重新校准 |
 | `run.cmd` | 立即运行一次签到 |
-| `setup.cmd` | 安装或更新每日计划任务 |
-| `status.cmd` | 查看安装、校准和今日签到状态 |
+| `setup.cmd` | 安装、验证或更新当前用户的每日计划任务 |
+| `status.cmd` | 查看安装、校准、今日签到及计划任务的上次/下次运行状态 |
 | `runtime/` | 每台电脑的本地模板、状态和日志；不会进入 Git |
 
 ## 常见操作
@@ -99,13 +99,15 @@ cd trae-work-daily-checkin
 
 1. 按 `Win + R`，输入 `taskschd.msc`；
 2. 打开“任务计划程序库”，点击右侧“刷新”；
-3. 找到 `AutoAgentsLogin-DailyCheckin`，查看其状态、下次运行时间、上次运行时间和上次运行结果。
+3. 找到 `CheckinBox-DailyCheckin`，查看其状态、下次运行时间、上次运行时间和上次运行结果。
 
-该任务安装后会跨 Windows 重启保留。如果刷新后仍找不到，说明自动任务当前未安装；请重新双击 `setup.cmd`，再返回任务计划程序刷新确认。如果安装窗口报告权限不足，请右键 `setup.cmd` 选择“以管理员身份运行”。
+该任务安装后会跨 Windows 重启保留。如果刷新后仍找不到，说明自动任务当前未安装；请在当前登录账号下正常双击 `setup.cmd`，再返回任务计划程序刷新确认。不要“以管理员身份运行”，否则任务可能注册到错误的用户视图。升级时，`setup.cmd` 会在新任务验证成功后自动删除旧名称 `AutoAgentsLogin-DailyCheckin`。
+
+双击 `status.cmd` 可查看更简洁的结果。`DoneToday=True` 表示当天已有经验证的成功记录；`Last result: 0x00000000` 表示上次脚本执行成功；非零结果表示未完成签到，应查看 `checkin.log`。`Scheduled task: not installed` 表示任务不存在；`query failed` 表示当前窗口无权查询，不代表任务已丢失。
 
 移动或复制项目文件夹后，重新双击 `setup.cmd`，让计划任务指向新路径。
 
-客户端更新、按钮样式变化或窗口尺寸变化后，重新双击 `calibrate.cmd`。
+工具会先尝试把 TRAE 窗口恢复到校准时的尺寸，并自动打开左下角账号菜单，然后再比较按钮模板。客户端停在普通任务页不影响运行；如果账号菜单布局、按钮位置或样式因客户端更新而改变，日志会报告 `current button differs from calibrated unclaimed state` 并拒绝点击。此时请手动展开账号菜单，再双击 `calibrate.cmd`。
 
 卸载自动任务但保留项目文件：
 
