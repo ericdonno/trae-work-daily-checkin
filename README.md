@@ -50,8 +50,9 @@ cd trae-work-daily-checkin
 依次双击：
 
 1. `run.cmd`：立即执行一次真实签到；
-2. `status.cmd`：确认今日状态；
-3. `setup.cmd`：以当前登录用户注册并验证每日自动任务。
+2. `test.cmd`：只打开账号菜单并走到签到按钮前；绝不点击签到，客户端会保留打开供你查看；
+3. `status.cmd`：确认今日状态；
+4. `setup.cmd`：以当前登录用户注册并验证每日自动任务。
 
 只有当任务账号、脚本路径、触发时间和下次运行时间都反查正确时，安装窗口才会显示 `Setup finished and the scheduled task was verified.`。之后 CheckinBox 会在每天 14:00 自动运行，失败时每小时补跑至 22:00。
 
@@ -89,6 +90,7 @@ cd trae-work-daily-checkin
 | `targets.json` | 客户端进程名、安装路径候选和安全匹配规则 |
 | `calibrate.cmd` | 首次校准或客户端界面更新后重新校准 |
 | `run.cmd` | 立即运行一次签到 |
+| `test.cmd` | 演示自动打开账号菜单；不点击签到，也不记录今日成功 |
 | `setup.cmd` | 安装、验证或更新当前用户的每日计划任务 |
 | `status.cmd` | 查看安装、校准、今日签到及计划任务的上次/下次运行状态 |
 | `runtime/` | 每台电脑的本地模板、状态和日志；不会进入 Git |

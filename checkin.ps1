@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Run', 'Calibrate', 'ImageCalibrate', 'Diagnose', 'Capture', 'Status', 'Install', 'Uninstall', 'SelfTest')]
+    [ValidateSet('Run', 'Test', 'Calibrate', 'ImageCalibrate', 'Diagnose', 'Capture', 'Status', 'Install', 'Uninstall', 'SelfTest')]
     [string]$Mode = 'Run',
     [string]$Target = 'all'
 )
@@ -243,7 +243,7 @@ function Open-TraeAccountMenu($Window) {
     Start-Sleep -Milliseconds 800
 }
 
-function Run-ImageTarget($App) {
+function Run-ImageTarget($App, [switch]$TestOnly) {
     Add-NativeDesktopType
     Add-Type -AssemblyName System.Drawing
     $calibration = Get-Content -Raw -LiteralPath (Get-ImageCalibrationPath $App) -Encoding UTF8 | ConvertFrom-Json
@@ -309,7 +309,7 @@ function Run-ImageTarget($App) {
                     $beforeCrop.Dispose(); $beforeCrop = $null
                     $capture.Bitmap.Dispose(); $capture = $null
                 }
-                if ($difference -le [double]$calibration.maxDifference -or $difference -lt 50 -or $menuAttempt -eq 3) { break }
+                if ($TestOnly -or $difference -le [double]$calibration.maxDifference -or $difference -lt 50 -or $menuAttempt -eq 3) { break }
                 Write-Log ("{0}: account menu did not appear; waiting and retrying." -f $App.displayName)
                 $beforeCrop.Dispose(); $beforeCrop = $null
                 $capture.Bitmap.Dispose(); $capture = $null
@@ -317,6 +317,10 @@ function Run-ImageTarget($App) {
             }
         }
         Write-Log ("{0}: image-template difference {1:N2}." -f $App.displayName, $difference)
+        if ($TestOnly) {
+            Write-Log ("{0}: test mode finished before the claim click; TRAE remains open." -f $App.displayName)
+            return 'success'
+        }
         if ($difference -gt [double]$calibration.maxDifference) {
             Write-Log ("{0}: current button differs from calibrated unclaimed state; no click." -f $App.displayName) 'ERROR'
             return 'blocked'
@@ -348,6 +352,14 @@ function Run-ImageTarget($App) {
         $template.Dispose()
         if ($capture) { $capture.Bitmap.Dispose() }
     }
+}
+
+function Test-Target($App) {
+    if (-not (Test-Path -LiteralPath (Get-ImageCalibrationPath $App))) {
+        Write-Log ("{0}: test mode requires image calibration; no client launch or click performed." -f $App.displayName) 'ERROR'
+        return 'needs-calibration'
+    }
+    Run-ImageTarget $App -TestOnly
 }
 
 function Calibrate-ImageTarget($App) {
@@ -810,6 +822,11 @@ switch ($Mode) {
             foreach ($app in @(Get-Targets)) { $results[$app.id] = Run-Target $app }
             Show-FinalFailure $results
         } finally { $mutex.ReleaseMutex(); $mutex.Dispose() }
+        exit (Get-RunExitCode $results)
+    }
+    'Test' {
+        $results = @{}
+        foreach ($app in @(Get-Targets)) { $results[$app.id] = Test-Target $app }
         exit (Get-RunExitCode $results)
     }
     'Calibrate' { foreach ($app in @(Get-Targets)) { Calibrate-Target $app } }
