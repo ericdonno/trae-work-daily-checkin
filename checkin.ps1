@@ -188,8 +188,27 @@ function Capture-WindowBitmap($Window) {
     if ($bounds.Width -le 1 -or $bounds.Height -le 1) { throw 'Target window has invalid bounds.' }
     $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    try { $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bitmap.Size) } finally { $graphics.Dispose() }
-    [pscustomobject]@{ Bitmap=$bitmap; Bounds=$bounds }
+    try {
+        $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bitmap.Size)
+        [pscustomobject]@{ Bitmap=$bitmap; Bounds=$bounds }
+    } catch {
+        $bitmap.Dispose()
+        throw
+    } finally { $graphics.Dispose() }
+}
+
+function Capture-TargetWindow($App, [int]$Attempts = 3) {
+    $lastError = $null
+    foreach ($attempt in 1..$Attempts) {
+        $window = Get-TargetWindow $App
+        if ($window) {
+            try { return [pscustomobject]@{ Window=$window; Capture=(Capture-WindowBitmap $window) } }
+            catch { $lastError = $_ }
+        }
+        if ($attempt -lt $Attempts) { Start-Sleep -Milliseconds 500 }
+    }
+    if ($lastError) { throw ("Unable to capture {0} after {1} attempts: {2}" -f $App.displayName, $Attempts, $lastError.Exception.Message) }
+    throw ("Interactive window not found for {0}." -f $App.displayName)
 }
 
 function Get-CroppedBitmap($Bitmap, $Calibration) {
@@ -261,7 +280,8 @@ function Run-ImageTarget($App) {
             [int][Math]::Floor($hoverRect.Top) + [int]$calibration.centerY
         )
         Start-Sleep -Milliseconds 500
-        $capture = Capture-WindowBitmap $window
+        $snapshot = Capture-TargetWindow $App
+        $window = $snapshot.Window; $capture = $snapshot.Capture
         if ([Math]::Abs($capture.Bounds.Width-[int]$calibration.windowWidth) -gt 3 -or [Math]::Abs($capture.Bounds.Height-[int]$calibration.windowHeight) -gt 3) {
             Write-Log ("{0}: window size changed; refusing coordinate click." -f $App.displayName) 'ERROR'
             return 'needs-calibration'
@@ -272,20 +292,28 @@ function Run-ImageTarget($App) {
             Write-Log ("{0}: check-in card is not visible; opening the account menu." -f $App.displayName)
             $beforeCrop.Dispose(); $beforeCrop = $null
             $capture.Bitmap.Dispose(); $capture = $null
-            Open-TraeAccountMenu $window
-            foreach ($attempt in 1..4) {
-                $hoverRect = $window.Current.BoundingRectangle
-                [void][AutoAgentsLoginClickNative]::SetCursorPos(
-                    [int][Math]::Floor($hoverRect.Left) + [int]$calibration.centerX,
-                    [int][Math]::Floor($hoverRect.Top) + [int]$calibration.centerY
-                )
-                Start-Sleep -Milliseconds 750
-                $capture = Capture-WindowBitmap $window
-                $beforeCrop = Get-CroppedBitmap $capture.Bitmap $calibration
-                $difference = Get-ImageDifference $beforeCrop $template
-                if ($difference -le [double]$calibration.maxDifference -or $attempt -eq 4) { break }
+            foreach ($menuAttempt in 1..3) {
+                Open-TraeAccountMenu $window
+                foreach ($attempt in 1..4) {
+                    $hoverRect = $window.Current.BoundingRectangle
+                    [void][AutoAgentsLoginClickNative]::SetCursorPos(
+                        [int][Math]::Floor($hoverRect.Left) + [int]$calibration.centerX,
+                        [int][Math]::Floor($hoverRect.Top) + [int]$calibration.centerY
+                    )
+                    Start-Sleep -Milliseconds 750
+                    $snapshot = Capture-TargetWindow $App
+                    $window = $snapshot.Window; $capture = $snapshot.Capture
+                    $beforeCrop = Get-CroppedBitmap $capture.Bitmap $calibration
+                    $difference = Get-ImageDifference $beforeCrop $template
+                    if ($difference -le [double]$calibration.maxDifference -or $attempt -eq 4) { break }
+                    $beforeCrop.Dispose(); $beforeCrop = $null
+                    $capture.Bitmap.Dispose(); $capture = $null
+                }
+                if ($difference -le [double]$calibration.maxDifference -or $difference -lt 50 -or $menuAttempt -eq 3) { break }
+                Write-Log ("{0}: account menu did not appear; waiting and retrying." -f $App.displayName)
                 $beforeCrop.Dispose(); $beforeCrop = $null
                 $capture.Bitmap.Dispose(); $capture = $null
+                Start-Sleep -Seconds 2
             }
         }
         Write-Log ("{0}: image-template difference {1:N2}." -f $App.displayName, $difference)
@@ -301,7 +329,8 @@ function Run-ImageTarget($App) {
         [AutoAgentsLoginClickNative]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
         Write-Log ("{0}: clicked calibrated check-in button once; verifying." -f $App.displayName)
         Start-Sleep -Seconds 3
-        $after = Capture-WindowBitmap $window
+        $snapshot = Capture-TargetWindow $App
+        $window = $snapshot.Window; $after = $snapshot.Capture
         $afterCrop = Get-CroppedBitmap $after.Bitmap $calibration
         try {
             $changed = Get-ImageDifference $beforeCrop $afterCrop
@@ -340,7 +369,8 @@ function Calibrate-ImageTarget($App) {
     Write-Host ("{0}: move the mouse to the CENTER of the unclaimed check-in button and leave it there." -f $App.displayName) -ForegroundColor Cyan
     Write-Host 'Capturing in 8 seconds. Calibration will not click.'
     Start-Sleep -Seconds 8
-    $capture = Capture-WindowBitmap $window
+    $snapshot = Capture-TargetWindow $App
+    $window = $snapshot.Window; $capture = $snapshot.Capture
     try {
         $cursor = [System.Windows.Forms.Cursor]::Position
         $centerX = $cursor.X - $capture.Bounds.Left
